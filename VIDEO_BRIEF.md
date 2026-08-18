@@ -88,10 +88,10 @@ this belief?"* Confirm. Side-by-side diff appears:
 **On screen:** click **Blast radius**. A progress bar fans out. Results land:
 
 ```
-  ledger              972 decisions
-  touched by belief   252
-  FLIPPED             252
-  exposure            $289,040
+  ledger              1,080 decisions
+  touched by belief     240
+  FLIPPED               240
+  exposure          $286,120
 ```
 
 Then a table of flipped decisions sorted by dollar amount.
@@ -99,7 +99,7 @@ Then a table of flipped decisions sorted by dollar amount.
 **VO:**
 > And this is the question nobody can answer today. Not "why did this one
 > decision go wrong" — what does this memory do to everything already decided?
-> Two hundred and fifty-two settled decisions flip. Two hundred and eighty-nine
+> Two hundred and forty settled decisions flip. Two hundred and eighty-six
 > thousand dollars of exposure. Each one re-run at its own point in history,
 > in parallel, across the cluster.
 
@@ -108,7 +108,7 @@ Then a table of flipped decisions sorted by dollar amount.
 **On screen, fast cuts:**
 
 1. Attacker tries to plant another belief. A red gate appears **before** it is
-   accepted: *"REJECTED — would rewrite 25.9% of settled decisions."*
+   accepted: *"REJECTED — would rewrite 52.5% of settled decisions, $19,640 exposure."*
 2. Terminal running `python bench/falsification.py`. Freeze on the result:
 
 ```
