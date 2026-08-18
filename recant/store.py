@@ -209,7 +209,14 @@ class BeliefStore:
 
     def retrieve(self, subject_id: str, query: str, k: int = 5) -> Retrieval:
         """Live retrieval. Captures the read HLC and the ranked result set in one
-        transaction, so the two can never disagree."""
+        statement, so the two can never disagree.
+
+        The `, id` tiebreak is load-bearing, not cosmetic. Cosine distance ties
+        are common among similar beliefs, and without a total order the winner
+        of a tie is decided by scan order -- which made replay disagree with the
+        retrieval it was supposed to reproduce. A deterministic total order is
+        what lets "replay is exact" be a guarantee instead of a tendency.
+        """
         vec = to_pgvector(self.embedder.embed(query))
         # One statement, so the anchor and the result set are read at the same
         # timestamp by construction -- they cannot drift apart, and it costs one
@@ -226,12 +233,12 @@ class BeliefStore:
                      WHERE subject_id = %s
                        AND quarantined_at IS NULL
                        AND valid_to IS NULL
-                  ORDER BY embedding <=> %s::VECTOR(1024)
+                  ORDER BY embedding <=> %s::VECTOR(1024), id
                      LIMIT %s
                  )
             SELECT a.hlc, h.id, h.content, h.source, h.trust, h.dist
               FROM anchor a LEFT JOIN hits h ON true
-          ORDER BY h.dist
+          ORDER BY h.dist, h.id
             """,
             (vec, subject_id, vec, k),
         )
@@ -278,7 +285,7 @@ class BeliefStore:
                AND quarantined_at IS NULL
                AND valid_to IS NULL
                {clause}
-          ORDER BY embedding <=> %s::VECTOR(1024)
+          ORDER BY embedding <=> %s::VECTOR(1024), id
              LIMIT %s
             """,
             params,
