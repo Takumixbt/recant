@@ -17,3 +17,7 @@ server.out
 demo_seed.log
 demo_seed.err
 bulk.log
+VIDEO_BRIEF.md
+SUBMISSION.md
+deploy.log
+poison_id.txt
