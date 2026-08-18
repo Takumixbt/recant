@@ -111,13 +111,14 @@ Then a table of flipped decisions sorted by dollar amount.
 > thousand dollars of exposure. Each one re-run at its own point in history,
 > in parallel, across the cluster.
 
-### 2:25-2:45 — Prevention, then the proof
+### 2:25-2:45 — The proof
 
-**On screen, fast cuts:**
+**CUT FROM THE VIDEO:** the live interdiction gate. It takes ~34 seconds on the
+free tier, which cannot be filmed without dead air. It works and is verified
+(`scripts/t_gate.py`); it lives in the README, not the video. If you want it on
+screen, show the terminal output as a still, not a live click.
 
-1. Attacker tries to plant another belief. A red gate appears **before** it is
-   accepted: *"REJECTED — would rewrite 52.5% of settled decisions, $19,640 exposure."*
-2. Terminal running `python bench/falsification.py`. Freeze on the result:
+**On screen:** terminal running `python bench/falsification.py`. Freeze on:
 
 ```
   common architecture   replay was WRONG   53%
@@ -125,8 +126,7 @@ Then a table of flipped decisions sorted by dollar amount.
 ```
 
 **VO:**
-> Once you can compute that, you can refuse it at the door. And here's why this
-> needs CockroachDB specifically: the usual way to build this — write the row,
+> And here's why this needs CockroachDB specifically: the usual way to build this — write the row,
 > embed it asynchronously, reconstruct replay by wall-clock time — fabricates
 > evidence in half its audits. It reports memories the agent never actually saw.
 > Ours writes the belief and its vector in one transaction, so that window
@@ -140,8 +140,7 @@ highlighted as it's mentioned.
 **VO:**
 > Built on CockroachDB distributed vector indexing, AS OF SYSTEM TIME for
 > replay, serializable transactions so concurrent agents can't corrupt shared
-> memory, and the Cloud MCP server for the investigator. Running on AWS with
-> Bedrock, Lambda, and S3.
+> memory, and the Cloud MCP server for the investigator, on AWS.
 
 **Final frame:** repo URL + demo URL, held 3 seconds.
 
@@ -160,8 +159,26 @@ highlighted as it's mentioned.
 
 ## What must be true before filming
 
-- [ ] Console deployed and reachable at a public URL
-- [ ] Demo dataset seeded and pre-warmed (blast radius under 10s)
-- [ ] Interdiction gate wired into the write path
-- [ ] Falsification benchmark runs clean in one command
-- [ ] Architecture diagram rendered
+- [x] Demo dataset seeded (18,021 beliefs, 1,080 decisions, real embeddings)
+- [x] Replay, counterfactual, and blast radius verified working
+- [x] Falsification benchmark runs clean in one command
+- [x] Console runs locally at http://127.0.0.1:8100
+- [ ] Console reachable at a public URL (deploy in progress)
+
+## Timing reality on the free tier
+
+Measured, so you can plan the edit:
+
+| Beat | Actual | How to film it |
+|---|---|---|
+| Ask the agent | ~2s | film live |
+| Exact replay | ~2s | film live |
+| Counterfactual | ~3s | film live |
+| Blast radius, one belief | ~49s | **start it, cut away, cut back to the result** |
+| Blast radius, campaign | ~53s | same |
+| Interdiction gate | ~34s | **cut from video** |
+
+The two blast-radius beats are the heart of the film and both take ~50 seconds.
+Do not try to show the wait. Click, hard cut to the result panel already
+populated. That is honest — the work really ran — and it is the only way to keep
+the segment inside its 35-second slot.
