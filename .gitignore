@@ -12,3 +12,8 @@ node_modules/
 *.log
 poison_id.txt
 certs/
+server.log
+server.out
+demo_seed.log
+demo_seed.err
+bulk.log

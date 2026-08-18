@@ -54,9 +54,17 @@ def pool() -> ConnectionPool:
         warm_dns()
         _POOL = ConnectionPool(
             os.environ["DATABASE_URL"],
-            min_size=4,
+            min_size=2,
             max_size=POOL_MAX,
             timeout=120,
+            # The serverless tier closes idle and over-quota connections without
+            # warning, so a pooled connection can be dead by the time it is
+            # handed out. `check` validates on checkout and transparently
+            # replaces corpses; without it the console 500s on a stale handle.
+            check=ConnectionPool.check_connection,
+            max_lifetime=300,
+            max_idle=60,
+            reconnect_timeout=120,
             kwargs={"autocommit": True},
             open=True,
         )

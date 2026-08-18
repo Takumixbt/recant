@@ -35,6 +35,17 @@ from .embed import to_pgvector
 from .store import BeliefStore
 
 
+def _cosine_distance(a: list[float], b: list[float]) -> float:
+    """Cosine distance for unit vectors: exactly 1 - dot product.
+
+    Both embedders normalize (Titan via normalize=True, the local one
+    explicitly), so this is the same number CockroachDB's <=> operator returns,
+    not an approximation of it. Interdictor._verify_metric asserts that against
+    the live cluster rather than taking it on faith.
+    """
+    return 1.0 - sum(x * y for x, y in zip(a, b))
+
+
 @dataclass
 class WouldFlip:
     decision_id: str
@@ -92,6 +103,32 @@ class Interdictor:
         self.store = store
         self.agent = agent
         self.max_flip_rate = max_flip_rate
+        self._metric_verified = False
+
+    def _verify_metric(self, cand_vec: list[float], sample_prompt: str) -> None:
+        """Prove the local distance computation matches the database's.
+
+        Runs once per evaluation against a real prompt from this subject's
+        history. If the two ever disagree, every verdict downstream is
+        meaningless, so this raises rather than warning.
+        """
+        if self._metric_verified:
+            return
+        other = self.store.embedder.embed(sample_prompt)
+        cur = self.store.conn.cursor()
+        cur.execute(
+            "SELECT %s::VECTOR(1024) <=> %s::VECTOR(1024)",
+            (to_pgvector(cand_vec), to_pgvector(other)),
+        )
+        db = float(cur.fetchone()[0])
+        local = _cosine_distance(cand_vec, other)
+        if abs(db - local) > 1e-4:
+            raise RuntimeError(
+                f"distance metric disagrees with the database: "
+                f"local={local:.9f} db={db:.9f}. Interdiction verdicts would be "
+                f"unsound; refusing to continue."
+            )
+        self._metric_verified = True
 
     def _history(self, subject_id: str, limit: int = 200):
         """Past decisions with their retrieval sets, newest first."""
@@ -145,17 +182,24 @@ class Interdictor:
             v.reason = "no settled history for this subject; nothing to contradict"
             return v
 
-        # Distance from the candidate to each past query, computed by the same
-        # index and metric that served the original retrieval -- so "would it
-        # have ranked?" is answered by the database, not by a reimplementation.
-        cur = self.store.conn.cursor()
-        prompts = [r[1] for r in rows]
-        cur.execute(
-            "SELECT i, %s::VECTOR(1024) <=> q FROM unnest(%s::VECTOR(1024)[]) "
-            "WITH ORDINALITY AS t(q, i)",
-            (cand_lit, [to_pgvector(self.store.embedder.embed(p)) for p in prompts]),
-        )
-        dists = {int(i) - 1: float(d) for i, d in cur.fetchall()}
+        # Distance from the candidate to each past query.
+        #
+        # CockroachDB has no array-of-VECTOR type, so these cannot be batched
+        # into one statement, and sending several hundred 1024-dimension vector
+        # literals as a VALUES list means megabytes of SQL per evaluation.
+        # So the arithmetic happens here instead.
+        #
+        # That is exact rather than approximate: both embedders emit unit
+        # vectors, and for unit vectors cosine distance is exactly 1 - dot. But
+        # "we reimplemented the database's distance metric" is the kind of claim
+        # that should be checked rather than asserted, so _verify_metric() below
+        # proves the two agree against this cluster before any verdict is
+        # issued.
+        self._verify_metric(cand_vec, rows[0][1])
+        dists = {
+            i: _cosine_distance(cand_vec, self.store.embedder.embed(r[1]))
+            for i, r in enumerate(rows)
+        }
 
         for idx, (did, prompt, was, amount, weakest, deepest, k) in enumerate(rows):
             d = dists.get(idx)

@@ -312,16 +312,75 @@ class BeliefStore:
         params += [vec, k]
 
         cur = self.conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT id, content, source, trust, embedding <=> %s::VECTOR(1024) AS dist
+                  FROM beliefs
+                  AS OF SYSTEM TIME {hlc}
+                 WHERE subject_id = %s
+                   AND quarantined_at IS NULL
+                   AND valid_to IS NULL
+                   {clause}
+              ORDER BY embedding <=> %s::VECTOR(1024), id
+                 LIMIT %s
+                """,
+                params,
+            )
+            return _to_retrieval(hlc, cur.fetchall())
+        except psycopg.InternalError as e:
+            if "GC threshold" not in str(e):
+                raise
+            self.conn.rollback()
+            return self._retrieve_via_log(subject_id, vec, hlc, k, exclude)
+
+    def _retrieve_via_log(
+        self, subject_id: str, vec: str, hlc: Decimal, k: int, exclude: frozenset[str]
+    ) -> Retrieval:
+        """
+        Reconstruct a past retrieval from the append-only log, past the GC window.
+
+        MVCC replay is bounded by garbage collection, and on a serverless tenant
+        that bound is NOT the one you configure on your own table: AS OF SYSTEM
+        TIME also has to read the table descriptors at that timestamp, and the
+        system ranges holding them keep gc.ttlseconds = 4500 (75 minutes) which
+        a non-system tenant is forbidden from changing. Set your table to 24
+        hours and replay still dies after about an hour.
+
+        So reconstruction falls back to first principles. Belief rows are never
+        deleted and their content and embedding are immutable once written --
+        quarantine only closes an interval. That means the live table plus the
+        event log is sufficient to rebuild the exact belief set at any past
+        instant, with no dependence on MVCC history at all:
+
+            a belief was live at T  <=>  it was asserted at or before T
+                                    and  not quarantined at or before T
+
+        Slower than MVCC and it only works because the schema is append-only,
+        but it makes the replay window unbounded rather than 75 minutes.
+        """
+        clause, params = "", [vec, subject_id, hlc, hlc]
+        if exclude:
+            clause = "AND b.id NOT IN (" + ",".join(["%s"] * len(exclude)) + ")"
+            params += list(exclude)
+        params += [vec, k]
+
+        cur = self.conn.cursor()
         cur.execute(
             f"""
-            SELECT id, content, source, trust, embedding <=> %s::VECTOR(1024) AS dist
-              FROM beliefs
-              AS OF SYSTEM TIME {hlc}
-             WHERE subject_id = %s
-               AND quarantined_at IS NULL
-               AND valid_to IS NULL
+            SELECT b.id, b.content, b.source, b.trust,
+                   b.embedding <=> %s::VECTOR(1024) AS dist
+              FROM beliefs b
+             WHERE b.subject_id = %s
+               AND b.created_hlc <= %s
+               AND NOT EXISTS (
+                     SELECT 1 FROM memory_events e
+                      WHERE e.belief_id = b.id
+                        AND e.op = 'quarantine'
+                        AND e.hlc <= %s
+                   )
                {clause}
-          ORDER BY embedding <=> %s::VECTOR(1024), id
+          ORDER BY b.embedding <=> %s::VECTOR(1024), b.id
              LIMIT %s
             """,
             params,
