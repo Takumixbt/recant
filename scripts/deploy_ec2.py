@@ -37,8 +37,12 @@ cd /opt
 git clone {repo} recant
 cd recant
 python3.11 -m pip install --quiet -r requirements.txt
-cat > .env <<'ENVEOF'
-DATABASE_URL={db}
+# CockroachDB Cloud chains to ISRG Root X2, which the OS trust store does not
+# always resolve. certifi carries it, so pin that explicitly rather than relying
+# on sslrootcert=system.
+CACERT=$(python3.11 -c "import certifi; print(certifi.where())")
+cat > .env <<ENVEOF
+DATABASE_URL={db}&sslrootcert=$CACERT
 EMBED_PROVIDER=local
 MODEL_PROVIDER=rule
 AWS_REGION={region}
@@ -105,8 +109,8 @@ def main():
         return
 
     db = os.environ["DATABASE_URL"]
-    # the instance has no pinned CA file; use the system trust store there
-    db = db.split("&sslrootcert=")[0] + "&sslrootcert=system"
+    # strip the local CA path; the instance appends certifi's bundle in user-data
+    db = db.split("&sslrootcert=")[0]
 
     sg_id = ensure_sg(ec2)
     ami = latest_al2023(boto3.client("ssm", region_name=REGION))

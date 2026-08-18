@@ -6,6 +6,8 @@ would have come out differently.**
 Built for the [CockroachDB × AWS Hackathon: Build with Agentic
 Memory](https://cockroachdb-ai.devpost.com/).
 
+**Live demo:** http://ec2-100-52-174-127.compute-1.amazonaws.com
+
 ---
 
 ## The problem
