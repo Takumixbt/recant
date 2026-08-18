@@ -194,7 +194,10 @@ class Agent:
     # --- replay ----------------------------------------------------------
 
     def replay(
-        self, decision_id: str, exclude: frozenset[str] = frozenset()
+        self,
+        decision_id: str,
+        exclude: frozenset[str] = frozenset(),
+        meta: tuple[str, str, float | None, Decimal] | None = None,
     ) -> tuple[Decision, Retrieval]:
         """
         Re-run a past decision against the memory as it stood at the time.
@@ -202,16 +205,22 @@ class Agent:
         With `exclude` empty this must reproduce the original action exactly --
         that is the correctness check. With beliefs excluded it becomes the
         counterfactual: same instant, same index, different evidence.
+
+        `meta` lets a caller replaying in bulk supply the decision row it already
+        fetched, so a fan-out of N replays costs N round trips rather than 2N.
         """
-        cur = self.store.conn.cursor()
-        cur.execute(
-            "SELECT subject_id, prompt, amount, read_hlc FROM decisions WHERE id = %s",
-            (decision_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            raise KeyError(f"no such decision: {decision_id}")
-        subject_id, prompt, amount, read_hlc = row
+        if meta is None:
+            cur = self.store.conn.cursor()
+            cur.execute(
+                "SELECT subject_id, prompt, amount, read_hlc FROM decisions WHERE id = %s",
+                (decision_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"no such decision: {decision_id}")
+            subject_id, prompt, amount, read_hlc = row
+        else:
+            subject_id, prompt, amount, read_hlc = meta
 
         retrieval = self.store.retrieve_as_of(
             subject_id, prompt, Decimal(read_hlc), k=5, exclude=exclude

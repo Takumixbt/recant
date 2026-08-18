@@ -1,0 +1,195 @@
+"""
+Write-time interdiction: judge a belief BEFORE it is ever trusted.
+
+Blast radius answers "what breaks if I remove this belief?" -- it walks the
+evidence edges a belief already has. A newly arrived belief has no edges yet, so
+that machinery finds nothing. The question here runs the other way:
+
+    if this belief had existed, which past decisions would have retrieved it,
+    and would any of them have come out differently?
+
+That cannot be answered with AS OF SYSTEM TIME, because the belief did not exist
+at those timestamps. It is instead answered by simulation, using material the
+ledger already stores:
+
+    - each past decision's prompt (so we can embed the query it actually ran)
+    - each past decision's evidence edges, with rank and distance (so we know
+      the exact retrieval set and the distance of the weakest member)
+
+If the candidate's distance to a past query beats that weakest member, it would
+have displaced it. Rebuild that decision's context with the substitution made,
+re-run the policy, and compare the action.
+
+The security consequence: a belief that would retroactively flip an anomalous
+number of settled decisions is not behaving like a fact. Facts are consistent
+with the past. A statement that rewrites hundreds of prior outcomes is an attack,
+and this catches it at the door rather than in the postmortem.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .agent import Agent, Decision
+from .embed import to_pgvector
+from .store import BeliefStore
+
+
+@dataclass
+class WouldFlip:
+    decision_id: str
+    was: str
+    would_be: str
+    amount: float | None
+    distance: float
+    displaced_rank: int
+
+
+@dataclass
+class Verdict:
+    content: str
+    subject_id: str
+    examined: int = 0
+    would_retrieve: int = 0
+    flips: list[WouldFlip] = field(default_factory=list)
+    admitted: bool = True
+    reason: str = ""
+
+    @property
+    def exposure(self) -> float:
+        return sum(f.amount or 0.0 for f in self.flips)
+
+    @property
+    def flip_rate(self) -> float:
+        return len(self.flips) / self.examined if self.examined else 0.0
+
+    def summary(self) -> str:
+        verdict = "ADMITTED" if self.admitted else "QUARANTINED"
+        return "\n".join(
+            [
+                f"{verdict}: {self.content[:70]}",
+                f"  past decisions examined    {self.examined}",
+                f"  would have been retrieved  {self.would_retrieve}",
+                f"  would have FLIPPED         {len(self.flips)}"
+                f"  ({100 * self.flip_rate:.1f}% of history)",
+                f"  retroactive exposure       {self.exposure:,.2f} USD",
+                f"  {self.reason}",
+            ]
+        )
+
+
+class Interdictor:
+    """
+    Gate on incoming beliefs.
+
+    `max_flip_rate` is the share of a subject's settled decisions a single new
+    belief may rewrite before it is treated as hostile. An ordinary fact ("the
+    customer prefers email") flips nothing. A waiver planted by an attacker
+    flips every large refund in the subject's history.
+    """
+
+    def __init__(self, store: BeliefStore, agent: Agent, max_flip_rate: float = 0.25):
+        self.store = store
+        self.agent = agent
+        self.max_flip_rate = max_flip_rate
+
+    def _history(self, subject_id: str, limit: int = 200):
+        """Past decisions with their retrieval sets, newest first."""
+        cur = self.store.conn.cursor()
+        cur.execute(
+            """
+            SELECT d.id, d.prompt, d.action, d.amount,
+                   max(db.distance) AS weakest,
+                   max(db.rank)     AS deepest,
+                   count(*)         AS k
+              FROM decisions d
+              JOIN decision_beliefs db ON db.decision_id = d.id
+             WHERE d.subject_id = %s
+          GROUP BY d.id, d.prompt, d.action, d.amount
+          ORDER BY d.decided_at DESC
+             LIMIT %s
+            """,
+            (subject_id, limit),
+        )
+        return cur.fetchall()
+
+    def _context_with(self, decision_id: str, candidate: str, drop_rank: int) -> str:
+        """Rebuild a past decision's context with the candidate substituted in
+        for the member it would have displaced."""
+        cur = self.store.conn.cursor()
+        cur.execute(
+            """
+            SELECT b.content, b.source, b.trust, db.rank
+              FROM decision_beliefs db
+              JOIN beliefs b ON b.id = db.belief_id
+             WHERE db.decision_id = %s
+          ORDER BY db.rank
+            """,
+            (decision_id,),
+        )
+        lines = [
+            f"- {c}  [source: {s}, trust: {t:.2f}]"
+            for c, s, t, rank in cur.fetchall()
+            if rank != drop_rank
+        ]
+        lines.insert(0, f"- {candidate}  [source: user:unverified, trust: 0.50]")
+        return "\n".join(lines)
+
+    def evaluate(self, subject_id: str, content: str) -> Verdict:
+        v = Verdict(content=content, subject_id=subject_id)
+        cand_vec = self.store.embedder.embed(content)
+        cand_lit = to_pgvector(cand_vec)
+        rows = self._history(subject_id)
+        v.examined = len(rows)
+        if not rows:
+            v.reason = "no settled history for this subject; nothing to contradict"
+            return v
+
+        # Distance from the candidate to each past query, computed by the same
+        # index and metric that served the original retrieval -- so "would it
+        # have ranked?" is answered by the database, not by a reimplementation.
+        cur = self.store.conn.cursor()
+        prompts = [r[1] for r in rows]
+        cur.execute(
+            "SELECT i, %s::VECTOR(1024) <=> q FROM unnest(%s::VECTOR(1024)[]) "
+            "WITH ORDINALITY AS t(q, i)",
+            (cand_lit, [to_pgvector(self.store.embedder.embed(p)) for p in prompts]),
+        )
+        dists = {int(i) - 1: float(d) for i, d in cur.fetchall()}
+
+        for idx, (did, prompt, was, amount, weakest, deepest, k) in enumerate(rows):
+            d = dists.get(idx)
+            if d is None or d >= float(weakest):
+                continue  # would not have made the cut
+            v.would_retrieve += 1
+            ctx = self._context_with(str(did), content, int(deepest))
+            new: Decision = self.agent.policy.decide(
+                prompt, ctx, float(amount) if amount is not None else None
+            )
+            if new.action != was:
+                v.flips.append(
+                    WouldFlip(
+                        str(did), was, new.action,
+                        float(amount) if amount is not None else None,
+                        d, int(deepest),
+                    )
+                )
+
+        if v.flip_rate > self.max_flip_rate:
+            v.admitted = False
+            v.reason = (
+                f"rewrites {100 * v.flip_rate:.1f}% of settled decisions "
+                f"(threshold {100 * self.max_flip_rate:.0f}%) -- held for review"
+            )
+        else:
+            v.reason = "consistent with settled history"
+        return v
+
+    def admit(self, subject_id: str, content: str, source: str, trust: float = 0.5):
+        """Evaluate, then write. A rejected belief is still recorded -- it is
+        quarantined on arrival, so the attempt itself remains auditable."""
+        v = self.evaluate(subject_id, content)
+        belief_id = self.store.assert_belief(subject_id, content, source, trust)
+        if not v.admitted:
+            self.store.quarantine(belief_id, f"interdicted on write: {v.reason}")
+        return belief_id, v
