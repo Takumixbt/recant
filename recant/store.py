@@ -16,6 +16,9 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 
+import socket
+from urllib.parse import urlparse
+
 import psycopg
 from dotenv import load_dotenv
 from psycopg import errors as pg_errors
@@ -71,8 +74,41 @@ def retry_txn(conn: psycopg.Connection, body, attempts: int = 10):
     raise last  # type: ignore[misc]
 
 
-def connect() -> psycopg.Connection:
-    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=20)
+def warm_dns(attempts: int = 8) -> None:
+    """Resolve the cluster host before connecting, retrying transient failures.
+
+    This machine intermittently fails to resolve the CockroachDB Cloud hostname
+    (getaddrinfo 11001/11002). It is a local resolver problem, not a cluster
+    problem, but it kills a long parallel job just as dead -- so every entry
+    point warms the name first rather than discovering it mid-fan-out.
+    """
+    host = urlparse(os.environ["DATABASE_URL"]).hostname
+    if not host:
+        return
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            socket.getaddrinfo(host, None)
+            return
+        except socket.gaierror as e:
+            last = e
+            time.sleep(min(0.5 * (2**i), 8.0))
+    raise RuntimeError(f"could not resolve {host} after {attempts} attempts") from last
+
+
+def connect(attempts: int = 5) -> psycopg.Connection:
+    warm_dns()
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return psycopg.connect(
+                os.environ["DATABASE_URL"], autocommit=True, connect_timeout=20
+            )
+        except psycopg.OperationalError as e:
+            last = e
+            time.sleep(min(0.5 * (2**i), 8.0))
+            warm_dns()
+    raise last  # type: ignore[misc]
 
 
 def _to_retrieval(hlc: Decimal, rows) -> Retrieval:

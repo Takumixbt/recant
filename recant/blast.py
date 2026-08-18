@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 
 from .agent import Agent
-from .store import BeliefStore
+from .store import BeliefStore, warm_dns
 
 load_dotenv()
 
@@ -51,6 +51,7 @@ def pool() -> ConnectionPool:
     once per connection rather than once per unit of work."""
     global _POOL
     if _POOL is None:
+        warm_dns()
         _POOL = ConnectionPool(
             os.environ["DATABASE_URL"],
             min_size=4,
